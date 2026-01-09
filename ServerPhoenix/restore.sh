@@ -479,8 +479,30 @@ for user_home in /home/*/; do
 
             log_info "  Starting on port $port..."
 
-            # Create systemd service for gunicorn
-            cat > "/tmp/gunicorn-$app_name.service" << SERVICEEOF
+            # Check if start.sh exists and use it
+            if [ -f "$app_dir/start.sh" ]; then
+                log_info "  Found start.sh, using it..."
+                chmod +x "$app_dir/start.sh"
+
+                cat > "/tmp/gunicorn-$app_name.service" << SERVICEEOF
+[Unit]
+Description=Gunicorn for $app_name
+After=network.target
+
+[Service]
+User=$user
+Group=$user
+WorkingDirectory=$app_dir
+ExecStart=/bin/bash $app_dir/start.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+            else
+                # Create systemd service for gunicorn directly
+                cat > "/tmp/gunicorn-$app_name.service" << SERVICEEOF
 [Unit]
 Description=Gunicorn for $app_name
 After=network.target
@@ -496,6 +518,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 SERVICEEOF
+            fi
 
             sudo mv "/tmp/gunicorn-$app_name.service" "/etc/systemd/system/gunicorn-$app_name.service"
             sudo systemctl daemon-reload
