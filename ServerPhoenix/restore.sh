@@ -1,7 +1,6 @@
 #!/bin/bash
-# ServerPhoenix - Restore Script
-# Restores full backup to a new server
-# Downloads from GitHub and runs automatically - no pre-installation needed
+# ServerPhoenix - Enhanced Restore Script v2.0
+# Restores full backup to a new server with proper dependency installation
 #
 # Usage: restore.sh <backup-file.tar.gz> [username]
 # Example: restore.sh /tmp/full-server-backup.tar.gz speedo
@@ -21,106 +20,71 @@ fi
 RESTORE_DIR="/tmp/restore-$$"
 mkdir -p "$RESTORE_DIR"
 
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_step() {
+    echo -e "${GREEN}$1${NC}"
+}
+
+log_info() {
+    echo -e "${CYAN}  $1${NC}"
+}
+
+log_warn() {
+    echo -e "${YELLOW}  [WARN] $1${NC}"
+}
+
+log_error() {
+    echo -e "${RED}  [ERROR] $1${NC}"
+}
+
+echo ""
 echo "=========================================="
-echo "ServerPhoenix - Server Restore"
+echo "ServerPhoenix - Enhanced Server Restore"
 echo "=========================================="
 echo "Backup: $BACKUP_FILE"
 echo "User: $DEST_USER"
 echo "=========================================="
 
 # ============================================
-# EXTRACT BACKUP
+# STEP 1: EXTRACT BACKUP
 # ============================================
 echo ""
-echo "[1/12] Extracting backup..."
+log_step "[1/14] Extracting backup..."
 tar xzf "$BACKUP_FILE" -C "$RESTORE_DIR"
 
-# Show what we're restoring
 if [ -f "$RESTORE_DIR/metadata.json" ]; then
-    echo "  - Source: $(jq -r '.source_hostname // "unknown"' "$RESTORE_DIR/metadata.json")"
-    echo "  - Date: $(jq -r '.backup_date // "unknown"' "$RESTORE_DIR/metadata.json")"
+    log_info "Source: $(jq -r '.source_hostname // "unknown"' "$RESTORE_DIR/metadata.json")"
+    log_info "Date: $(jq -r '.backup_date // "unknown"' "$RESTORE_DIR/metadata.json")"
 fi
 
 # ============================================
-# INSTALL BASE PACKAGES
+# STEP 2: INSTALL BASE PACKAGES
 # ============================================
 echo ""
-echo "[2/12] Installing base packages..."
+log_step "[2/14] Installing base packages..."
+export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -qq
-sudo apt-get install -y -qq curl wget git jq
+sudo apt-get install -y -qq curl wget git jq software-properties-common apt-transport-https ca-certificates gnupg lsb-release
 
 # ============================================
-# ANALYZE AND INSTALL REQUIREMENTS
-# ============================================
-echo ""
-echo "[3/12] Analyzing backup and installing required software..."
-
-# Node.js + PM2
-if [ -f "$RESTORE_DIR/apps/pm2-processes.json" ] && [ -s "$RESTORE_DIR/apps/pm2-processes.json" ]; then
-    process_count=$(jq '. | length' "$RESTORE_DIR/apps/pm2-processes.json" 2>/dev/null || echo 0)
-    if [ "$process_count" -gt 0 ]; then
-        echo "  - Found $process_count PM2 processes, installing Node.js..."
-        if ! command -v node &>/dev/null; then
-            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null 2>&1
-            sudo apt-get install -y -qq nodejs
-        fi
-        sudo npm install -g pm2 >/dev/null 2>&1
-        echo "    - Node.js $(node --version 2>/dev/null || echo 'installed')"
-        echo "    - PM2 $(pm2 --version 2>/dev/null || echo 'installed')"
-    fi
-fi
-
-# Python
-python_needed=false
-if ls "$RESTORE_DIR"/apps/home-*.tar.gz 2>/dev/null | xargs -I {} tar tzf {} 2>/dev/null | grep -q "requirements.txt"; then
-    python_needed=true
-fi
-if ls "$RESTORE_DIR"/apps/home-*.tar.gz 2>/dev/null | xargs -I {} tar tzf {} 2>/dev/null | grep -q "/venv/"; then
-    python_needed=true
-fi
-if [ "$python_needed" = true ]; then
-    echo "  - Found Python apps, installing Python..."
-    sudo apt-get install -y -qq python3 python3-pip python3-venv
-    echo "    - Python $(python3 --version 2>/dev/null || echo 'installed')"
-fi
-
-# Docker
-if [ -d "$RESTORE_DIR/docker" ] && [ "$(ls -A "$RESTORE_DIR/docker" 2>/dev/null)" ]; then
-    echo "  - Found Docker data, installing Docker..."
-    if ! command -v docker &>/dev/null; then
-        curl -fsSL https://get.docker.com | sh >/dev/null 2>&1
-        sudo usermod -aG docker "$DEST_USER"
-    fi
-    echo "    - Docker $(docker --version 2>/dev/null | cut -d' ' -f3 | tr -d ',' || echo 'installed')"
-fi
-
-# Nginx
-if [ -f "$RESTORE_DIR/configs/nginx.tar.gz" ]; then
-    echo "  - Found Nginx configs, installing Nginx..."
-    sudo apt-get install -y -qq nginx
-    echo "    - Nginx installed"
-fi
-
-# Apache
-if [ -f "$RESTORE_DIR/configs/apache.tar.gz" ]; then
-    echo "  - Found Apache configs, installing Apache..."
-    sudo apt-get install -y -qq apache2
-    echo "    - Apache installed"
-fi
-
-# ============================================
-# RESTORE HOME DIRECTORIES
+# STEP 3: RESTORE HOME DIRECTORIES FIRST
 # ============================================
 echo ""
-echo "[4/12] Restoring user home directories..."
+log_step "[3/14] Restoring user home directories..."
 for home_backup in "$RESTORE_DIR"/apps/home-*.tar.gz; do
     [ -f "$home_backup" ] || continue
     backup_user=$(basename "$home_backup" .tar.gz | sed 's/home-//')
-    echo "  - User: $backup_user"
+    log_info "User: $backup_user"
 
     # Create user if doesn't exist
     if ! id "$backup_user" &>/dev/null; then
-        echo "    - Creating user $backup_user..."
+        log_info "Creating user $backup_user..."
         sudo useradd -m -s /bin/bash "$backup_user" 2>/dev/null || true
     fi
 
@@ -129,270 +93,380 @@ for home_backup in "$RESTORE_DIR"/apps/home-*.tar.gz; do
 done
 
 # ============================================
-# RESTORE NGINX
+# STEP 4: DETECT AND INSTALL NODE.JS
 # ============================================
 echo ""
-echo "[5/12] Restoring Nginx..."
+log_step "[4/14] Checking for Node.js applications..."
+
+node_needed=false
+
+# Check for package.json in any restored home directory
+for user_home in /home/*/; do
+    if find "$user_home" -name "package.json" -type f 2>/dev/null | head -1 | grep -q .; then
+        node_needed=true
+        break
+    fi
+done
+
+# Check systemd services for Node apps
+if [ -d "$RESTORE_DIR/system/systemd" ]; then
+    for service_file in "$RESTORE_DIR"/system/systemd/*.service; do
+        [ -f "$service_file" ] || continue
+        if grep -qE "node|npm|pm2" "$service_file" 2>/dev/null; then
+            node_needed=true
+            break
+        fi
+    done
+fi
+
+if [ "$node_needed" = true ]; then
+    log_info "Node.js applications detected, installing Node.js 20.x..."
+    if ! command -v node &>/dev/null; then
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null 2>&1
+        sudo apt-get install -y -qq nodejs
+    fi
+    log_info "Node.js $(node --version)"
+
+    # Install PM2 globally
+    log_info "Installing PM2..."
+    sudo npm install -g pm2 >/dev/null 2>&1
+    log_info "PM2 $(pm2 --version)"
+fi
+
+# ============================================
+# STEP 5: DETECT AND INSTALL PYTHON
+# ============================================
+echo ""
+log_step "[5/14] Checking for Python applications..."
+
+python_needed=false
+
+# Check for requirements.txt or venv in any restored home directory
+for user_home in /home/*/; do
+    if find "$user_home" -name "requirements.txt" -type f 2>/dev/null | head -1 | grep -q .; then
+        python_needed=true
+        break
+    fi
+    if find "$user_home" -type d -name "venv" 2>/dev/null | head -1 | grep -q .; then
+        python_needed=true
+        break
+    fi
+done
+
+if [ "$python_needed" = true ]; then
+    log_info "Python applications detected, installing Python..."
+    sudo apt-get install -y -qq python3 python3-pip python3-venv python3-dev build-essential
+    log_info "Python $(python3 --version)"
+fi
+
+# ============================================
+# STEP 6: INSTALL NPM DEPENDENCIES
+# ============================================
+echo ""
+log_step "[6/14] Installing NPM dependencies..."
+
+if command -v npm &>/dev/null; then
+    for user_home in /home/*/; do
+        user=$(basename "$user_home")
+
+        # Find all package.json files
+        while IFS= read -r package_json; do
+            [ -f "$package_json" ] || continue
+            app_dir=$(dirname "$package_json")
+            app_name=$(basename "$app_dir")
+
+            # Skip node_modules
+            [[ "$app_dir" == *"node_modules"* ]] && continue
+
+            log_info "Installing: $app_name ($app_dir)"
+
+            # Fix ownership first
+            sudo chown -R "$user:$user" "$app_dir" 2>/dev/null || true
+
+            # Install dependencies as the user
+            (
+                cd "$app_dir"
+                sudo -u "$user" npm install --production 2>&1 | tail -3
+            ) || log_warn "npm install failed for $app_name"
+
+        done < <(find "$user_home" -name "package.json" -type f ! -path "*/node_modules/*" 2>/dev/null)
+    done
+else
+    log_info "No Node.js installed, skipping npm dependencies"
+fi
+
+# ============================================
+# STEP 7: SETUP PYTHON VIRTUALENVS
+# ============================================
+echo ""
+log_step "[7/14] Setting up Python virtual environments..."
+
+if command -v python3 &>/dev/null; then
+    for user_home in /home/*/; do
+        user=$(basename "$user_home")
+
+        # Find all requirements.txt files
+        while IFS= read -r req_file; do
+            [ -f "$req_file" ] || continue
+            app_dir=$(dirname "$req_file")
+            app_name=$(basename "$app_dir")
+
+            # Skip venv directories
+            [[ "$app_dir" == *"venv"* ]] && continue
+            [[ "$app_dir" == *".venv"* ]] && continue
+
+            log_info "Setting up Python env: $app_name ($app_dir)"
+
+            # Fix ownership
+            sudo chown -R "$user:$user" "$app_dir" 2>/dev/null || true
+
+            # Create venv if it doesn't exist
+            if [ ! -d "$app_dir/venv" ]; then
+                log_info "  Creating virtualenv..."
+                sudo -u "$user" python3 -m venv "$app_dir/venv" 2>/dev/null || true
+            fi
+
+            # Install requirements
+            if [ -d "$app_dir/venv" ]; then
+                log_info "  Installing requirements..."
+                (
+                    cd "$app_dir"
+                    sudo -u "$user" bash -c "source venv/bin/activate && pip install --upgrade pip >/dev/null 2>&1 && pip install -r requirements.txt 2>&1 | tail -5"
+                ) || log_warn "pip install failed for $app_name"
+            fi
+
+        done < <(find "$user_home" -name "requirements.txt" -type f ! -path "*/venv/*" ! -path "*/.venv/*" 2>/dev/null)
+    done
+else
+    log_info "No Python installed, skipping virtualenvs"
+fi
+
+# ============================================
+# STEP 8: RESTORE NGINX
+# ============================================
+echo ""
+log_step "[8/14] Restoring Nginx..."
 if [ -f "$RESTORE_DIR/configs/nginx.tar.gz" ]; then
-    echo "  - Restoring nginx configs..."
+    log_info "Installing Nginx..."
+    sudo apt-get install -y -qq nginx
+
+    log_info "Restoring nginx configs..."
     sudo tar xzf "$RESTORE_DIR/configs/nginx.tar.gz" -C / 2>/dev/null || true
 
     # Restore document roots
     for root_backup in "$RESTORE_DIR"/apps/nginx-root*.tar.gz; do
         [ -f "$root_backup" ] || continue
-        echo "  - Document root: $(basename "$root_backup")"
+        log_info "Document root: $(basename "$root_backup")"
         sudo tar xzf "$root_backup" -C / 2>/dev/null || true
     done
 
-    # Test and reload
+    # Remove SSL configs temporarily (will get new certs)
+    sudo rm -f /etc/nginx/sites-enabled/*-ssl* 2>/dev/null || true
+
+    # Comment out SSL lines in configs
+    sudo find /etc/nginx -name "*.conf" -exec sed -i 's/ssl_certificate/#ssl_certificate/g' {} \; 2>/dev/null || true
+    sudo find /etc/nginx -name "*.conf" -exec sed -i 's/listen 443/#listen 443/g' {} \; 2>/dev/null || true
+
     if sudo nginx -t 2>/dev/null; then
         sudo systemctl enable nginx 2>/dev/null || true
-        sudo systemctl reload nginx 2>/dev/null || sudo systemctl start nginx 2>/dev/null || true
-        echo "  - Nginx configured and running"
+        sudo systemctl restart nginx 2>/dev/null || true
+        log_info "Nginx configured and running"
     else
-        echo "  - WARNING: Nginx config test failed (may need SSL certs)"
+        log_warn "Nginx config test failed - checking..."
+        sudo nginx -t 2>&1 | head -5
     fi
 else
-    echo "  - No Nginx config to restore"
+    log_info "No Nginx config to restore"
 fi
 
 # ============================================
-# RESTORE APACHE
+# STEP 9: RESTORE APACHE (disabled if nginx running)
 # ============================================
 echo ""
-echo "[6/12] Restoring Apache..."
+log_step "[9/14] Restoring Apache..."
 if [ -f "$RESTORE_DIR/configs/apache.tar.gz" ]; then
-    echo "  - Restoring apache configs..."
-    sudo tar xzf "$RESTORE_DIR/configs/apache.tar.gz" -C / 2>/dev/null || true
-
-    # Restore document roots
-    for root_backup in "$RESTORE_DIR"/apps/apache-root*.tar.gz; do
-        [ -f "$root_backup" ] || continue
-        echo "  - Document root: $(basename "$root_backup")"
-        sudo tar xzf "$root_backup" -C / 2>/dev/null || true
-    done
-
-    # Test and reload
-    if sudo apache2ctl configtest 2>/dev/null; then
-        sudo systemctl enable apache2 2>/dev/null || true
-        sudo systemctl reload apache2 2>/dev/null || sudo systemctl start apache2 2>/dev/null || true
-        echo "  - Apache configured and running"
+    # Check if nginx is using port 80
+    if ss -tlnp | grep -q ":80.*nginx"; then
+        log_warn "Nginx already on port 80, skipping Apache"
     else
-        echo "  - WARNING: Apache config test failed"
+        log_info "Installing Apache..."
+        sudo apt-get install -y -qq apache2
+        sudo tar xzf "$RESTORE_DIR/configs/apache.tar.gz" -C / 2>/dev/null || true
+
+        if sudo apache2ctl configtest 2>/dev/null; then
+            sudo systemctl enable apache2 2>/dev/null || true
+            sudo systemctl restart apache2 2>/dev/null || true
+            log_info "Apache configured and running"
+        else
+            log_warn "Apache config test failed"
+        fi
     fi
 else
-    echo "  - No Apache config to restore"
+    log_info "No Apache config to restore"
 fi
 
 # ============================================
-# RESTORE SYSTEMD SERVICES
+# STEP 10: RESTORE DATABASES
 # ============================================
 echo ""
-echo "[7/12] Restoring systemd services..."
-if [ -d "$RESTORE_DIR/system/systemd" ] && [ "$(ls -A "$RESTORE_DIR/system/systemd" 2>/dev/null)" ]; then
-    # First restore the app directories that services depend on
-    for app_backup in "$RESTORE_DIR"/apps/systemd-*.tar.gz; do
-        [ -f "$app_backup" ] || continue
-        echo "  - App directory: $(basename "$app_backup")"
-        sudo tar xzf "$app_backup" -C / 2>/dev/null || true
-    done
-
-    # Then copy service files
-    for service_file in "$RESTORE_DIR"/system/systemd/*.service; do
-        [ -f "$service_file" ] || continue
-        service_name=$(basename "$service_file")
-        echo "  - Service: $service_name"
-        sudo cp "$service_file" /etc/systemd/system/ 2>/dev/null || true
-    done
-
-    sudo systemctl daemon-reload
-else
-    echo "  - No custom services to restore"
-fi
-
-# ============================================
-# RESTORE DATABASES
-# ============================================
-echo ""
-echo "[8/12] Restoring databases..."
+log_step "[10/14] Restoring databases..."
 
 # MySQL
-mysql_restored=false
 for sql in "$RESTORE_DIR"/databases/mysql-*.sql; do
     [ -f "$sql" ] || continue
-
-    if [ "$mysql_restored" = false ]; then
-        echo "  - Installing MySQL server..."
-        sudo apt-get install -y -qq mysql-server 2>/dev/null || true
-        sudo systemctl start mysql 2>/dev/null || true
-        mysql_restored=true
-    fi
+    log_info "Installing MySQL..."
+    sudo apt-get install -y -qq mysql-server
+    sudo systemctl start mysql 2>/dev/null || true
 
     db=$(basename "$sql" .sql | sed 's/mysql-//')
-    echo "  - MySQL database: $db"
+    log_info "Restoring MySQL database: $db"
     mysql -e "CREATE DATABASE IF NOT EXISTS \`$db\`" 2>/dev/null || true
     mysql "$db" < "$sql" 2>/dev/null || true
+    break  # Only install once
 done
 
 # PostgreSQL
-postgres_restored=false
 for sql in "$RESTORE_DIR"/databases/postgres-*.sql; do
     [ -f "$sql" ] || continue
-
-    if [ "$postgres_restored" = false ]; then
-        echo "  - Installing PostgreSQL server..."
-        sudo apt-get install -y -qq postgresql 2>/dev/null || true
-        sudo systemctl start postgresql 2>/dev/null || true
-        postgres_restored=true
-    fi
+    log_info "Installing PostgreSQL..."
+    sudo apt-get install -y -qq postgresql
+    sudo systemctl start postgresql 2>/dev/null || true
 
     db=$(basename "$sql" .sql | sed 's/postgres-//')
-    echo "  - PostgreSQL database: $db"
+    log_info "Restoring PostgreSQL database: $db"
     sudo -u postgres createdb "$db" 2>/dev/null || true
     sudo -u postgres psql "$db" < "$sql" 2>/dev/null || true
 done
 
 # MongoDB
 if [ -d "$RESTORE_DIR/databases/mongodb" ]; then
-    echo "  - Installing MongoDB..."
-    # Try different methods for MongoDB installation
-    if ! command -v mongod &>/dev/null; then
-        # Ubuntu/Debian
-        curl -fsSL https://pgp.mongodb.com/server-7.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor 2>/dev/null || true
-        echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list >/dev/null 2>&1 || true
-        sudo apt-get update -qq 2>/dev/null || true
-        sudo apt-get install -y -qq mongodb-org 2>/dev/null || sudo apt-get install -y -qq mongodb 2>/dev/null || true
-    fi
+    log_info "Installing MongoDB..."
+    curl -fsSL https://pgp.mongodb.com/server-7.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor 2>/dev/null || true
+    echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu $(lsb_release -cs)/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list >/dev/null 2>&1 || true
+    sudo apt-get update -qq 2>/dev/null || true
+    sudo apt-get install -y -qq mongodb-org 2>/dev/null || sudo apt-get install -y -qq mongodb 2>/dev/null || true
     sudo systemctl start mongod 2>/dev/null || true
-    echo "  - Restoring MongoDB databases..."
     mongorestore "$RESTORE_DIR/databases/mongodb" 2>/dev/null || true
 fi
 
 # Redis
 if [ -f "$RESTORE_DIR/databases/dump.rdb" ]; then
-    echo "  - Installing Redis..."
+    log_info "Installing Redis..."
     sudo apt-get install -y -qq redis-server
-    sudo systemctl stop redis-server 2>/dev/null || sudo systemctl stop redis 2>/dev/null || true
+    sudo systemctl stop redis-server 2>/dev/null || true
     sudo cp "$RESTORE_DIR/databases/dump.rdb" /var/lib/redis/
     sudo chown redis:redis /var/lib/redis/dump.rdb
-    sudo systemctl start redis-server 2>/dev/null || sudo systemctl start redis 2>/dev/null || true
-    echo "  - Redis restored"
+    sudo systemctl start redis-server 2>/dev/null || true
+    log_info "Redis restored"
 fi
 
 # ============================================
-# RESTORE DOCKER
+# STEP 11: RESTORE AND START SYSTEMD SERVICES
 # ============================================
 echo ""
-echo "[9/12] Restoring Docker..."
-if [ -d "$RESTORE_DIR/docker" ] && [ "$(ls -A "$RESTORE_DIR/docker" 2>/dev/null)" ]; then
-    # Restore volumes
-    for vol_backup in "$RESTORE_DIR"/docker/volume-*.tar.gz; do
-        [ -f "$vol_backup" ] || continue
-        vol_name=$(basename "$vol_backup" .tar.gz | sed 's/volume-//')
-        echo "  - Volume: $vol_name"
-        docker volume create "$vol_name" 2>/dev/null || true
-        docker run --rm -v "$vol_name":/data -v "$RESTORE_DIR/docker":/backup alpine \
-            tar xzf "/backup/$(basename "$vol_backup")" -C /data 2>/dev/null || true
+log_step "[11/14] Restoring systemd services..."
+
+if [ -d "$RESTORE_DIR/system/systemd" ] && [ "$(ls -A "$RESTORE_DIR/system/systemd" 2>/dev/null)" ]; then
+    # First restore the app directories that services depend on
+    for app_backup in "$RESTORE_DIR"/apps/systemd-*.tar.gz; do
+        [ -f "$app_backup" ] || continue
+        log_info "Restoring app: $(basename "$app_backup")"
+        sudo tar xzf "$app_backup" -C / 2>/dev/null || true
     done
 
-    # Find and start docker-compose projects
-    echo "  - Looking for docker-compose projects..."
-    for compose in "$RESTORE_DIR"/docker/*docker-compose*.yml "$RESTORE_DIR"/docker/*compose.yml; do
-        [ -f "$compose" ] || continue
-        compose_name=$(basename "$compose")
-        # Try to find where this compose file should be
-        original_path=$(echo "$compose_name" | tr '_' '/' | sed 's|^|/|')
-        original_dir=$(dirname "$original_path")
+    # Process each service
+    for service_file in "$RESTORE_DIR"/system/systemd/*.service; do
+        [ -f "$service_file" ] || continue
+        service_name=$(basename "$service_file" .service)
 
-        if [ -d "$original_dir" ]; then
-            echo "  - Starting compose in: $original_dir"
-            (cd "$original_dir" && docker compose up -d 2>/dev/null) || true
-        fi
-    done
-else
-    echo "  - No Docker data to restore"
-fi
+        # Skip DigitalOcean/system services
+        [[ "$service_name" =~ ^(do-agent|droplet-agent|vpc-peering|iscsi|syslog|vmtoolsd)$ ]] && continue
 
-# ============================================
-# RESTORE PM2 APPS
-# ============================================
-echo ""
-echo "[10/12] Restoring PM2 processes..."
-if [ -f "$RESTORE_DIR/apps/pm2-processes.json" ]; then
-    process_count=$(jq '. | length' "$RESTORE_DIR/apps/pm2-processes.json" 2>/dev/null || echo 0)
+        log_info "Service: $service_name"
 
-    if [ "$process_count" -gt 0 ]; then
-        # Restore PM2 app directories
-        for app_backup in "$RESTORE_DIR"/apps/pm2-*.tar.gz; do
-            [ -f "$app_backup" ] || continue
-            app_name=$(basename "$app_backup" .tar.gz | sed 's/pm2-//')
-            echo "  - App: $app_name"
-            tar xzf "$app_backup" -C "$DEST_HOME/" 2>/dev/null || true
-        done
+        # Get working directory from service file
+        work_dir=$(grep "WorkingDirectory=" "$service_file" | cut -d= -f2 | head -1)
 
-        # Install dependencies for each app
-        for app_path in $(jq -r '.[].pm2_env.pm_cwd // empty' "$RESTORE_DIR/apps/pm2-processes.json" 2>/dev/null); do
-            if [ -d "$app_path" ]; then
-                app_name=$(basename "$app_path")
-                echo "  - Installing dependencies: $app_name"
+        if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
+            log_info "  WorkingDirectory: $work_dir"
 
-                # Fix ownership
-                sudo chown -R "$DEST_USER:$DEST_USER" "$app_path" 2>/dev/null || true
+            # Determine the user who owns this directory
+            dir_user=$(stat -c '%U' "$work_dir" 2>/dev/null || echo "$DEST_USER")
 
-                # Install npm dependencies
-                if [ -f "$app_path/package.json" ]; then
-                    (cd "$app_path" && npm install --production 2>/dev/null) || true
+            # Install dependencies if needed
+            if [ -f "$work_dir/package.json" ]; then
+                log_info "  Running npm install..."
+                (cd "$work_dir" && sudo -u "$dir_user" npm install --production 2>&1 | tail -2) || true
+            fi
+
+            if [ -f "$work_dir/requirements.txt" ]; then
+                log_info "  Setting up Python venv..."
+                if [ ! -d "$work_dir/venv" ]; then
+                    sudo -u "$dir_user" python3 -m venv "$work_dir/venv" 2>/dev/null || true
                 fi
-
-                # Install pip dependencies
-                if [ -f "$app_path/requirements.txt" ]; then
-                    if [ -d "$app_path/venv" ]; then
-                        (cd "$app_path" && source venv/bin/activate && pip install -r requirements.txt 2>/dev/null) || true
-                    else
-                        (cd "$app_path" && pip3 install -r requirements.txt 2>/dev/null) || true
-                    fi
+                if [ -d "$work_dir/venv" ]; then
+                    (cd "$work_dir" && sudo -u "$dir_user" bash -c "source venv/bin/activate && pip install -r requirements.txt" 2>&1 | tail -2) || true
                 fi
             fi
-        done
-
-        # Restore PM2 process list
-        if [ -f "$RESTORE_DIR/apps/dump.pm2" ]; then
-            mkdir -p ~/.pm2
-            cp "$RESTORE_DIR/apps/dump.pm2" ~/.pm2/
-            echo "  - Resurrecting PM2 processes..."
-            pm2 resurrect 2>/dev/null || true
-            pm2 save 2>/dev/null || true
         fi
-    fi
+
+        # Copy service file
+        sudo cp "$service_file" /etc/systemd/system/ 2>/dev/null || true
+    done
+
+    sudo systemctl daemon-reload
 else
-    echo "  - No PM2 processes to restore"
+    log_info "No custom services to restore"
 fi
 
 # ============================================
-# RESTORE CRONTABS
+# STEP 12: RESTORE PM2 PROCESSES
 # ============================================
 echo ""
-echo "[11/12] Restoring crontabs..."
-for cron_file in "$RESTORE_DIR"/system/crontab-*; do
-    [ -f "$cron_file" ] || continue
-    [ -s "$cron_file" ] || continue
+log_step "[12/14] Setting up PM2 processes..."
 
-    user=$(basename "$cron_file" | sed 's/crontab-//')
-    [ "$user" = "system" ] && continue
+if command -v pm2 &>/dev/null; then
+    # Find PM2 apps and start them
+    for user_home in /home/*/; do
+        user=$(basename "$user_home")
 
-    echo "  - Crontab for: $user"
-    crontab -u "$user" "$cron_file" 2>/dev/null || true
-done
+        # Look for package.json with start scripts
+        while IFS= read -r package_json; do
+            [ -f "$package_json" ] || continue
+            app_dir=$(dirname "$package_json")
+            app_name=$(basename "$app_dir")
+
+            # Skip node_modules
+            [[ "$app_dir" == *"node_modules"* ]] && continue
+
+            # Check if it has a start script
+            if jq -e '.scripts.start' "$package_json" >/dev/null 2>&1; then
+                log_info "Found PM2 candidate: $app_name"
+
+                # Start with PM2
+                (
+                    cd "$app_dir"
+                    sudo -u "$user" pm2 start npm --name "$app_name" -- start 2>&1 | tail -2
+                ) || log_warn "Failed to start $app_name with PM2"
+            fi
+
+        done < <(find "$user_home" -name "package.json" -type f ! -path "*/node_modules/*" 2>/dev/null | head -10)
+    done
+
+    # Save PM2 config
+    pm2 save 2>/dev/null || true
+
+    # Setup PM2 startup
+    pm2 startup systemd -u "$DEST_USER" --hp "$DEST_HOME" 2>/dev/null || true
+else
+    log_info "PM2 not installed, skipping"
+fi
 
 # ============================================
-# START ALL SERVICES
+# STEP 13: START ALL SERVICES
 # ============================================
 echo ""
-echo "[12/12] Starting all services..."
-
-# Enable and start nginx
-sudo systemctl enable nginx 2>/dev/null || true
-sudo systemctl start nginx 2>/dev/null || true
+log_step "[13/14] Starting all services..."
 
 # Start custom systemd services
 for service in /etc/systemd/system/*.service; do
@@ -400,12 +474,36 @@ for service in /etc/systemd/system/*.service; do
     name=$(basename "$service" .service)
 
     # Skip system services
-    [[ "$name" =~ ^(snap|cloud|ssh|systemd|getty|user@|dbus) ]] && continue
+    [[ "$name" =~ ^(snap|cloud|ssh|systemd|getty|user@|dbus|do-agent|droplet-agent|vpc-peering|iscsi|syslog|vmtoolsd|apache-htcacheclean)$ ]] && continue
 
-    echo "  - Starting: $name"
+    log_info "Starting: $name"
     sudo systemctl enable "$name" 2>/dev/null || true
-    sudo systemctl start "$name" 2>/dev/null || true
+    if ! sudo systemctl start "$name" 2>/dev/null; then
+        log_warn "Failed to start $name"
+        sudo systemctl status "$name" --no-pager 2>&1 | tail -5
+    fi
 done
+
+# ============================================
+# STEP 14: RESTORE ENVIRONMENT FILES
+# ============================================
+echo ""
+log_step "[14/14] Restoring environment files..."
+
+if [ -d "$RESTORE_DIR/configs/env" ]; then
+    for env_file in "$RESTORE_DIR"/configs/env/*; do
+        [ -f "$env_file" ] || continue
+
+        # Convert filename back to path (underscores to slashes)
+        original_name=$(basename "$env_file")
+        original_path=$(echo "$original_name" | sed 's|_|/|g')
+
+        if [ -d "$(dirname "/$original_path")" ]; then
+            log_info "Restoring: /$original_path"
+            sudo cp "$env_file" "/$original_path" 2>/dev/null || true
+        fi
+    done
+fi
 
 # ============================================
 # CLEANUP
@@ -413,35 +511,39 @@ done
 rm -rf "$RESTORE_DIR"
 
 # ============================================
-# SUMMARY
+# FINAL STATUS
 # ============================================
 echo ""
 echo "=========================================="
 echo "ServerPhoenix - Restore Complete!"
 echo "=========================================="
 echo ""
-echo "Services Status:"
+echo -e "${GREEN}Services Status:${NC}"
 echo "----------------"
-systemctl list-units --type=service --state=running --no-pager 2>/dev/null | grep -E "nginx|apache|mysql|postgresql|mongod|redis|pm2" | head -10 || true
+systemctl list-units --type=service --state=running --no-pager 2>/dev/null | grep -vE "^(UNIT|LOAD|●)" | head -20 || true
 echo ""
-echo "Listening Ports:"
+echo -e "${GREEN}Listening Ports:${NC}"
 echo "----------------"
-ss -tlnp 2>/dev/null | grep -E "LISTEN" | head -15 || true
+ss -tlnp 2>/dev/null | head -15 || true
+echo ""
+echo -e "${GREEN}PM2 Processes:${NC}"
+echo "--------------"
+pm2 list 2>/dev/null || echo "PM2 not running"
 echo ""
 echo "=========================================="
-echo "NEXT STEPS:"
+echo -e "${YELLOW}NEXT STEPS:${NC}"
 echo "=========================================="
 echo ""
-echo "1. Update DNS records to point to this server's IP:"
-echo "   - Your domains need to resolve to: $(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')"
+echo "1. Update DNS records to point to:"
+echo "   $(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')"
 echo ""
 echo "2. Install SSL certificates:"
-echo "   sudo apt install certbot python3-certbot-nginx"
+echo "   sudo apt install certbot python3-certbot-nginx -y"
 echo "   sudo certbot --nginx"
 echo ""
-echo "3. Verify all services:"
-echo "   systemctl list-units --type=service --state=running"
-echo "   pm2 status"
+echo "3. Check service status:"
+echo "   systemctl status <service-name>"
+echo "   pm2 logs"
 echo ""
 echo "4. Test your applications!"
 echo ""
