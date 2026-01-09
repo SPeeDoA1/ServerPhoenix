@@ -420,13 +420,104 @@ else
 fi
 
 # ============================================
-# STEP 12: RESTORE PM2 PROCESSES
+# STEP 12: START PYTHON APPS (GUNICORN/DJANGO)
 # ============================================
 echo ""
-log_step "[12/14] Setting up PM2 processes..."
+log_step "[12/16] Starting Python applications..."
+
+# Install gunicorn globally if Python exists
+if command -v python3 &>/dev/null; then
+    sudo pip3 install gunicorn 2>/dev/null || true
+fi
+
+# Find and start Django apps
+for user_home in /home/*/; do
+    user=$(basename "$user_home")
+
+    # Find Django apps (have manage.py)
+    while IFS= read -r manage_py; do
+        [ -f "$manage_py" ] || continue
+        app_dir=$(dirname "$manage_py")
+        app_name=$(basename "$app_dir")
+
+        # Skip if in venv
+        [[ "$app_dir" == *"venv"* ]] && continue
+        [[ "$app_dir" == *".venv"* ]] && continue
+
+        # Look for wsgi.py
+        wsgi_file=$(find "$app_dir" -name "wsgi.py" -type f ! -path "*/venv/*" 2>/dev/null | head -1)
+        if [ -n "$wsgi_file" ]; then
+            wsgi_module=$(dirname "$wsgi_file" | xargs basename)
+            log_info "Django app: $app_name (wsgi: $wsgi_module)"
+
+            # Setup virtualenv if not exists
+            if [ ! -d "$app_dir/venv" ]; then
+                log_info "  Creating virtualenv..."
+                sudo -u "$user" python3 -m venv "$app_dir/venv" 2>/dev/null || true
+            fi
+
+            # Install requirements
+            if [ -f "$app_dir/requirements.txt" ] && [ -d "$app_dir/venv" ]; then
+                log_info "  Installing requirements..."
+                sudo -u "$user" bash -c "cd $app_dir && source venv/bin/activate && pip install --upgrade pip wheel setuptools >/dev/null 2>&1 && pip install gunicorn && pip install -r requirements.txt" 2>&1 | tail -3
+            fi
+
+            # Create logs directory
+            sudo -u "$user" mkdir -p "$app_dir/logs" 2>/dev/null || true
+
+            # Default port (check processes backup for original port)
+            port=8000
+            if [ -f "$RESTORE_DIR/processes/python-servers.txt" ]; then
+                orig_port=$(grep -E "gunicorn|uvicorn" "$RESTORE_DIR/processes/python-servers.txt" 2>/dev/null | grep -oP '0\.0\.0\.0:\K\d+' | head -1)
+                [ -n "$orig_port" ] && port=$orig_port
+            fi
+            # Also check .env
+            if [ -f "$app_dir/.env" ]; then
+                env_port=$(grep -oP '^PORT=\K\d+' "$app_dir/.env" 2>/dev/null | head -1)
+                [ -n "$env_port" ] && port=$env_port
+            fi
+
+            log_info "  Starting on port $port..."
+
+            # Create systemd service for gunicorn
+            cat > "/tmp/gunicorn-$app_name.service" << SERVICEEOF
+[Unit]
+Description=Gunicorn for $app_name
+After=network.target
+
+[Service]
+User=$user
+Group=$user
+WorkingDirectory=$app_dir
+ExecStart=$app_dir/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:$port $wsgi_module.wsgi:application
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+
+            sudo mv "/tmp/gunicorn-$app_name.service" "/etc/systemd/system/gunicorn-$app_name.service"
+            sudo systemctl daemon-reload
+            sudo systemctl enable "gunicorn-$app_name" 2>/dev/null || true
+
+            if sudo systemctl start "gunicorn-$app_name" 2>/dev/null; then
+                log_info "  ✓ Started gunicorn-$app_name on port $port"
+            else
+                log_warn "  Systemd failed, trying direct start..."
+                sudo -u "$user" bash -c "cd $app_dir && source venv/bin/activate && nohup gunicorn --workers 3 --bind 0.0.0.0:$port $wsgi_module.wsgi:application > logs/gunicorn.log 2>&1 &" || true
+            fi
+        fi
+    done < <(find "$user_home" -name "manage.py" -type f ! -path "*/venv/*" 2>/dev/null)
+done
+
+# ============================================
+# STEP 13: START NODE.JS APPS WITH PM2
+# ============================================
+echo ""
+log_step "[13/16] Starting Node.js applications..."
 
 if command -v pm2 &>/dev/null; then
-    # Find PM2 apps and start them
     for user_home in /home/*/; do
         user=$(basename "$user_home")
 
@@ -436,37 +527,47 @@ if command -v pm2 &>/dev/null; then
             app_dir=$(dirname "$package_json")
             app_name=$(basename "$app_dir")
 
-            # Skip node_modules
+            # Skip node_modules and frontend
             [[ "$app_dir" == *"node_modules"* ]] && continue
+            [[ "$app_dir" == *"Frontend"* ]] && continue
 
             # Check if it has a start script
             if jq -e '.scripts.start' "$package_json" >/dev/null 2>&1; then
-                log_info "Found PM2 candidate: $app_name"
+                log_info "Node app: $app_name"
+
+                # Fix ownership
+                sudo chown -R "$user:$user" "$app_dir" 2>/dev/null || true
+
+                # Install dependencies if needed
+                if [ ! -d "$app_dir/node_modules" ]; then
+                    log_info "  Installing npm dependencies..."
+                    (cd "$app_dir" && sudo -u "$user" npm install 2>&1 | tail -2) || true
+                fi
 
                 # Start with PM2
                 (
                     cd "$app_dir"
+                    sudo -u "$user" pm2 delete "$app_name" 2>/dev/null || true
                     sudo -u "$user" pm2 start npm --name "$app_name" -- start 2>&1 | tail -2
-                ) || log_warn "Failed to start $app_name with PM2"
+                ) || log_warn "Failed to start $app_name"
             fi
 
-        done < <(find "$user_home" -name "package.json" -type f ! -path "*/node_modules/*" 2>/dev/null | head -10)
+        done < <(find "$user_home" -name "package.json" -type f ! -path "*/node_modules/*" -maxdepth 4 2>/dev/null)
     done
 
-    # Save PM2 config
+    # Save PM2 config and setup startup
     pm2 save 2>/dev/null || true
-
-    # Setup PM2 startup
-    pm2 startup systemd -u "$DEST_USER" --hp "$DEST_HOME" 2>/dev/null || true
+    startup_cmd=$(pm2 startup systemd -u "$DEST_USER" --hp "/home/$DEST_USER" 2>/dev/null | grep "sudo" | head -1)
+    [ -n "$startup_cmd" ] && eval "$startup_cmd" 2>/dev/null || true
 else
     log_info "PM2 not installed, skipping"
 fi
 
 # ============================================
-# STEP 13: START ALL SERVICES
+# STEP 14: START ALL SYSTEMD SERVICES
 # ============================================
 echo ""
-log_step "[13/14] Starting all services..."
+log_step "[14/16] Starting systemd services..."
 
 # Start custom systemd services
 for service in /etc/systemd/system/*.service; do
@@ -485,10 +586,10 @@ for service in /etc/systemd/system/*.service; do
 done
 
 # ============================================
-# STEP 14: RESTORE ENVIRONMENT FILES
+# STEP 15: RESTORE ENVIRONMENT FILES
 # ============================================
 echo ""
-log_step "[14/14] Restoring environment files..."
+log_step "[15/16] Restoring environment files..."
 
 if [ -d "$RESTORE_DIR/configs/env" ]; then
     for env_file in "$RESTORE_DIR"/configs/env/*; do
@@ -504,6 +605,23 @@ if [ -d "$RESTORE_DIR/configs/env" ]; then
         fi
     done
 fi
+
+# ============================================
+# STEP 16: FINAL VERIFICATION
+# ============================================
+echo ""
+log_step "[16/16] Final verification..."
+
+# Wait a moment for services to start
+sleep 3
+
+# Check all listening ports
+log_info "Checking listening ports..."
+ss -tlnp 2>/dev/null | grep LISTEN | while read line; do
+    port=$(echo "$line" | awk '{print $4}' | grep -oP ':\K\d+$')
+    proc=$(echo "$line" | grep -oP 'users:\(\("\K[^"]+')
+    [ -n "$port" ] && log_info "  Port $port: $proc"
+done
 
 # ============================================
 # CLEANUP

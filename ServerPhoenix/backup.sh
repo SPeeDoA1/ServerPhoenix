@@ -237,16 +237,14 @@ for user_home in /home/*; do
         --exclude='.cache' \
         --exclude='.npm' \
         --exclude='.local/share/Trash' \
-        --exclude='venv/lib' \
         --exclude='.git/objects' \
         --exclude='.nvm' \
         --exclude='.rustup' \
         --exclude='.cargo' \
         --exclude='go/pkg' \
         --exclude='.next' \
-        --exclude='dist' \
-        --exclude='build' \
-        --exclude='*.log' \
+        --exclude='__pycache__' \
+        --exclude='*.pyc' \
         "$user_home" 2>/dev/null || true
 done
 
@@ -282,10 +280,33 @@ find /home -type f \( -name ".env" -o -name ".env.*" -o -name ".env.local" -o -n
 done
 
 # ============================================
-# 10. SYSTEM INFO
+# 10. RUNNING PROCESSES (for gunicorn, node, etc.)
 # ============================================
 echo ""
-echo "[10/10] System information..."
+echo "[10/11] Capturing running processes..."
+mkdir -p "$BACKUP_DIR/processes"
+
+# Capture gunicorn processes with full command
+ps aux | grep -E "gunicorn|uvicorn" | grep -v grep > "$BACKUP_DIR/processes/python-servers.txt" 2>/dev/null || true
+if [ -s "$BACKUP_DIR/processes/python-servers.txt" ]; then
+    echo "  - Found gunicorn/uvicorn processes"
+    cat "$BACKUP_DIR/processes/python-servers.txt"
+fi
+
+# Capture node processes
+ps aux | grep -E "node.*server|node.*app|node.*index" | grep -v grep > "$BACKUP_DIR/processes/node-servers.txt" 2>/dev/null || true
+if [ -s "$BACKUP_DIR/processes/node-servers.txt" ]; then
+    echo "  - Found Node.js processes"
+fi
+
+# Capture all listening ports with process info
+ss -tlnp > "$BACKUP_DIR/processes/listening-ports.txt" 2>/dev/null || true
+
+# ============================================
+# 11. SYSTEM INFO
+# ============================================
+echo ""
+echo "[11/11] System information..."
 cat /etc/os-release > "$BACKUP_DIR/system/os-release" 2>/dev/null || true
 dpkg --get-selections > "$BACKUP_DIR/system/packages-dpkg.txt" 2>/dev/null || true
 pip3 freeze > "$BACKUP_DIR/system/packages-pip.txt" 2>/dev/null || true
