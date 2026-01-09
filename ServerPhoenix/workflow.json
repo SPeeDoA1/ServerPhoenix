@@ -1,0 +1,318 @@
+{
+  "name": "ServerPhoenix - Universal Server Migration",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "migrate-server",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "webhookId": "migrate-server"
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/ServerPhoenix/main/scanner.sh | bash -s /tmp/server-inventory.json",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "scan-source",
+      "name": "Scan Source Server",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [420, 300],
+      "credentials": {
+        "sshPassword": {
+          "id": "={{ $json.source.credential }}",
+          "name": "={{ $json.source.credential }}"
+        }
+      },
+      "notes": "Downloads scanner.sh from GitHub and runs it on source server to detect all services"
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/ServerPhoenix/main/backup.sh | bash -s /tmp/server-inventory.json {{ $('Webhook').item.json.source.user }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "backup-source",
+      "name": "Backup Source Server",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [640, 300],
+      "credentials": {
+        "sshPassword": {
+          "id": "={{ $('Webhook').item.json.source.credential }}",
+          "name": "={{ $('Webhook').item.json.source.credential }}"
+        }
+      },
+      "notes": "Downloads backup.sh and creates full server backup. May take several minutes for large servers."
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/full-server-backup.tar.gz {{ $('Webhook').item.json.destination.user }}@{{ $('Webhook').item.json.destination.host }}:/tmp/",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "transfer-backup",
+      "name": "Transfer Backup to Destination",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [860, 300],
+      "credentials": {
+        "sshPassword": {
+          "id": "={{ $('Webhook').item.json.source.credential }}",
+          "name": "={{ $('Webhook').item.json.source.credential }}"
+        }
+      },
+      "notes": "Transfers backup file from source to destination server via SCP"
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/ServerPhoenix/main/restore.sh | sudo bash -s /tmp/full-server-backup.tar.gz {{ $('Webhook').item.json.destination.user }}",
+        "options": {
+          "timeout": 900000
+        }
+      },
+      "id": "restore-destination",
+      "name": "Restore to Destination",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [1080, 300],
+      "credentials": {
+        "sshPassword": {
+          "id": "={{ $('Webhook').item.json.destination.credential }}",
+          "name": "={{ $('Webhook').item.json.destination.credential }}"
+        }
+      },
+      "notes": "Downloads restore.sh and restores everything on the new server. Installs required packages automatically."
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "echo '=== Running Services ===' && systemctl list-units --type=service --state=running --no-pager | head -20 && echo '' && echo '=== PM2 Status ===' && (pm2 status 2>/dev/null || echo 'PM2 not running') && echo '' && echo '=== Listening Ports ===' && ss -tlnp | head -15",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "verify-services",
+      "name": "Verify Services Running",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [1300, 300],
+      "credentials": {
+        "sshPassword": {
+          "id": "={{ $('Webhook').item.json.destination.credential }}",
+          "name": "={{ $('Webhook').item.json.destination.credential }}"
+        }
+      },
+      "notes": "Verifies all services started correctly on new server"
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "rm -f /tmp/full-server-backup.tar.gz /tmp/server-inventory.json && echo 'Cleanup complete'",
+        "options": {}
+      },
+      "id": "cleanup-source",
+      "name": "Cleanup Source",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [1520, 200],
+      "credentials": {
+        "sshPassword": {
+          "id": "={{ $('Webhook').item.json.source.credential }}",
+          "name": "={{ $('Webhook').item.json.source.credential }}"
+        }
+      },
+      "notes": "Removes temporary backup files from source server"
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "rm -f /tmp/full-server-backup.tar.gz && echo 'Cleanup complete'",
+        "options": {}
+      },
+      "id": "cleanup-destination",
+      "name": "Cleanup Destination",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [1520, 400],
+      "credentials": {
+        "sshPassword": {
+          "id": "={{ $('Webhook').item.json.destination.credential }}",
+          "name": "={{ $('Webhook').item.json.destination.credential }}"
+        }
+      },
+      "notes": "Removes temporary backup files from destination server"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  message: 'Server migration completed successfully!',\n  source: $('Webhook').item.json.source.host,\n  destination: $('Webhook').item.json.destination.host,\n  services_status: $('Verify Services Running').item.json.stdout,\n  next_steps: [\n    '1. Update DNS records to point to ' + $('Webhook').item.json.destination.host,\n    '2. Run: sudo certbot --nginx',\n    '3. Test your applications'\n  ]\n}) }}",
+        "options": {}
+      },
+      "id": "success-response",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1740, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.stderr }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        }
+      },
+      "id": "error-check",
+      "name": "Check for Errors",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1300, 500],
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Scan Source Server",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan Source Server": {
+      "main": [
+        [
+          {
+            "node": "Backup Source Server",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backup Source Server": {
+      "main": [
+        [
+          {
+            "node": "Transfer Backup to Destination",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transfer Backup to Destination": {
+      "main": [
+        [
+          {
+            "node": "Restore to Destination",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore to Destination": {
+      "main": [
+        [
+          {
+            "node": "Verify Services Running",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Services Running": {
+      "main": [
+        [
+          {
+            "node": "Cleanup Source",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cleanup Destination",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup Source": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup Destination": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "automation",
+      "id": "1"
+    },
+    {
+      "name": "server-migration",
+      "id": "2"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "serverphoenix"
+  },
+  "pinData": {}
+}
