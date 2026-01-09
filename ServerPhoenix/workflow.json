@@ -18,7 +18,7 @@
     {
       "parameters": {
         "operation": "executeCommand",
-        "command": "curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/ServerPhoenix/main/scanner.sh | bash -s /tmp/server-inventory.json",
+        "command": "curl -fsSL https://raw.githubusercontent.com/SPeeDoA1/ServerPhoenix/main/scanner.sh | bash -s /tmp/server-inventory.json",
         "options": {
           "timeout": 120000
         }
@@ -39,7 +39,7 @@
     {
       "parameters": {
         "operation": "executeCommand",
-        "command": "curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/ServerPhoenix/main/backup.sh | bash -s /tmp/server-inventory.json {{ $('Webhook').item.json.source.user }}",
+        "command": "curl -fsSL https://raw.githubusercontent.com/SPeeDoA1/ServerPhoenix/main/backup.sh | bash -s /tmp/server-inventory.json {{ $('Webhook').item.json.source.user }}",
         "options": {
           "timeout": 600000
         }
@@ -81,7 +81,7 @@
     {
       "parameters": {
         "operation": "executeCommand",
-        "command": "curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/ServerPhoenix/main/restore.sh | sudo bash -s /tmp/full-server-backup.tar.gz {{ $('Webhook').item.json.destination.user }}",
+        "command": "curl -fsSL https://raw.githubusercontent.com/SPeeDoA1/ServerPhoenix/main/restore.sh | sudo bash -s /tmp/full-server-backup.tar.gz {{ $('Webhook').item.json.destination.user }}",
         "options": {
           "timeout": 900000
         }
