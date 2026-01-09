@@ -1,0 +1,114 @@
+{
+  "name": "ServerPhoenix - Fully Automatic Migration",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "migrate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "command": "=sshpass -p '{{ $json.source.password }}' ssh -o StrictHostKeyChecking=no {{ $json.source.user }}@{{ $json.source.host }} 'curl -fsSL https://raw.githubusercontent.com/SPeeDoA1/ServerPhoenix/main/ServerPhoenix/scanner.sh | bash -s /tmp/server-inventory.json'"
+      },
+      "id": "scan",
+      "name": "1. Scan Source",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "command": "=sshpass -p '{{ $('Webhook').item.json.source.password }}' ssh -o StrictHostKeyChecking=no {{ $('Webhook').item.json.source.user }}@{{ $('Webhook').item.json.source.host }} 'curl -fsSL https://raw.githubusercontent.com/SPeeDoA1/ServerPhoenix/main/ServerPhoenix/backup.sh | bash -s /tmp/server-inventory.json {{ $('Webhook').item.json.source.user }}'"
+      },
+      "id": "backup",
+      "name": "2. Backup Source",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "command": "=sshpass -p '{{ $('Webhook').item.json.source.password }}' scp -o StrictHostKeyChecking=no {{ $('Webhook').item.json.source.user }}@{{ $('Webhook').item.json.source.host }}:/tmp/full-server-backup.tar.gz /tmp/migration-backup.tar.gz"
+      },
+      "id": "download",
+      "name": "3. Download Backup",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "command": "=sshpass -p '{{ $('Webhook').item.json.destination.password }}' scp -o StrictHostKeyChecking=no /tmp/migration-backup.tar.gz {{ $('Webhook').item.json.destination.user }}@{{ $('Webhook').item.json.destination.host }}:/tmp/full-server-backup.tar.gz"
+      },
+      "id": "upload",
+      "name": "4. Upload to Destination",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "command": "=sshpass -p '{{ $('Webhook').item.json.destination.password }}' ssh -o StrictHostKeyChecking=no {{ $('Webhook').item.json.destination.user }}@{{ $('Webhook').item.json.destination.host }} 'curl -fsSL https://raw.githubusercontent.com/SPeeDoA1/ServerPhoenix/main/ServerPhoenix/restore.sh | sudo bash -s /tmp/full-server-backup.tar.gz {{ $('Webhook').item.json.destination.user }}'"
+      },
+      "id": "restore",
+      "name": "5. Restore Destination",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "command": "=sshpass -p '{{ $('Webhook').item.json.destination.password }}' ssh -o StrictHostKeyChecking=no {{ $('Webhook').item.json.destination.user }}@{{ $('Webhook').item.json.destination.host }} 'echo \"=== Services ===\" && systemctl list-units --type=service --state=running --no-pager | head -15 && echo \"\" && echo \"=== Ports ===\" && ss -tlnp | head -10'"
+      },
+      "id": "verify",
+      "name": "6. Verify Services",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1520, 300]
+    },
+    {
+      "parameters": {
+        "command": "rm -f /tmp/migration-backup.tar.gz"
+      },
+      "id": "cleanup",
+      "name": "7. Cleanup",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1740, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: 'Migration completed!', source: $('Webhook').item.json.source.host, destination: $('Webhook').item.json.destination.host, verification: $('6. Verify Services').item.json.stdout }) }}"
+      },
+      "id": "response",
+      "name": "Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1960, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "1. Scan Source", "type": "main", "index": 0 }]] },
+    "1. Scan Source": { "main": [[{ "node": "2. Backup Source", "type": "main", "index": 0 }]] },
+    "2. Backup Source": { "main": [[{ "node": "3. Download Backup", "type": "main", "index": 0 }]] },
+    "3. Download Backup": { "main": [[{ "node": "4. Upload to Destination", "type": "main", "index": 0 }]] },
+    "4. Upload to Destination": { "main": [[{ "node": "5. Restore Destination", "type": "main", "index": 0 }]] },
+    "5. Restore Destination": { "main": [[{ "node": "6. Verify Services", "type": "main", "index": 0 }]] },
+    "6. Verify Services": { "main": [[{ "node": "7. Cleanup", "type": "main", "index": 0 }]] },
+    "7. Cleanup": { "main": [[{ "node": "Response", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [],
+  "meta": {},
+  "pinData": {}
+}
