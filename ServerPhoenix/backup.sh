@@ -242,9 +242,9 @@ for user_home in /home/*; do
         --exclude='.rustup' \
         --exclude='.cargo' \
         --exclude='go/pkg' \
-        --exclude='.next' \
         --exclude='__pycache__' \
         --exclude='*.pyc' \
+        --exclude='*.log' \
         "$user_home" 2>/dev/null || true
 done
 
